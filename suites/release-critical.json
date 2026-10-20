@@ -1,0 +1,16 @@
+{
+  "id": "release-critical",
+  "description": "Критичные проверки релиза. Заполнить реальными ID и правилами после ревью.",
+  "include": {
+    "case_ids": [],
+    "globs": [],
+    "products": [],
+    "functionalities": []
+  },
+  "exclude": {
+    "case_ids": [],
+    "globs": [],
+    "products": [],
+    "functionalities": []
+  }
+}

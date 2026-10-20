@@ -1,0 +1,16 @@
+{
+  "id": "full-regression",
+  "description": "Все тест-кейсы репозитория",
+  "include": {
+    "case_ids": [],
+    "globs": ["cases/**/*.xlsx"],
+    "products": [],
+    "functionalities": []
+  },
+  "exclude": {
+    "case_ids": [],
+    "globs": [],
+    "products": [],
+    "functionalities": []
+  }
+}

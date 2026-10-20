@@ -1,0 +1,11 @@
+{
+  "sheet_name": "Тест-кейсы",
+  "headers": [
+    "Name",
+    "Description",
+    "Preconditions",
+    "Steps",
+    "Expected Result"
+  ],
+  "id_pattern": "^(?P<id>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+-\\d{4})\\s+—\\s+\\S"
+}

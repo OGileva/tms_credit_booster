@@ -1,0 +1,16 @@
+{
+  "id": "smoke",
+  "description": "Утверждённый минимальный smoke-набор. Заполнить реальными ID после ревью.",
+  "include": {
+    "case_ids": [],
+    "globs": [],
+    "products": [],
+    "functionalities": []
+  },
+  "exclude": {
+    "case_ids": [],
+    "globs": [],
+    "products": [],
+    "functionalities": []
+  }
+}

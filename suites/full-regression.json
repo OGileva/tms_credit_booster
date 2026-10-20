@@ -1,16 +1,18 @@
 {
   "id": "full-regression",
-  "description": "Все тест-кейсы репозитория",
+  "description": "Все активные кейсы с тегом regression",
   "include": {
     "case_ids": [],
-    "globs": ["cases/**/*.xlsx"],
     "products": [],
-    "functionalities": []
+    "sections": [],
+    "tags": ["regression"],
+    "statuses": []
   },
   "exclude": {
     "case_ids": [],
-    "globs": [],
     "products": [],
-    "functionalities": []
+    "sections": [],
+    "tags": [],
+    "statuses": ["deprecated"]
   }
 }

@@ -1,11 +1,14 @@
-# Тест-кейсы
+# Каталог тест-кейсов
 
-Исходные XLSX-файлы сгруппированы по продукту и функционалу: `cases/<product>/<function>/*.xlsx`.
+Продукт — папка первого уровня. Вложенный путь описывает функционал. Конечный раздел содержит `section.json` и файлы `<ID>.md`.
 
-Для нового пакета используйте:
+Новый раздел:
 
 ```bash
-qa-cases new-pack --product credit-booster --function <function> --name <task-or-pack>
+qa-cases create-section \
+  --product credit-booster \
+  --path scoring/loan-history \
+  --name "История займов" \
+  --id-prefix CB-SCR-LH \
+  --alias "История кредитов"
 ```
-
-Функционал задаётся коротким slug в нижнем регистре: `payments`, `scoring`, `client-card`.

@@ -1,11 +1,13 @@
 {
-  "sheet_name": "Тест-кейсы",
-  "headers": [
+  "source_format": "markdown+toml",
+  "default_export_format": "table",
+  "canonical_fields": [
     "Name",
     "Description",
     "Preconditions",
     "Steps",
     "Expected Result"
   ],
-  "id_pattern": "^(?P<id>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+-\\d{4})\\s+—\\s+\\S"
+  "supported_import_formats": ["xlsx", "csv", "tsv", "json", "docx", "md"],
+  "supported_export_formats": ["table", "xlsx", "csv", "json", "markdown"]
 }

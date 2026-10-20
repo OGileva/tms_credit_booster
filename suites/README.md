@@ -1,16 +1,10 @@
-# Наборы тест-кейсов
+# Наборы
 
-JSON-файлы содержат правила включения и исключения. Все поля внутри `include` и `exclude` объединяются по логике ИЛИ; блок `exclude` применяется после включения.
+Правила `include` и `exclude` поддерживают `case_ids`, `products`, `sections`, `tags`, `statuses`. Внутри блока правила объединяются по ИЛИ; `exclude` применяется после `include`.
 
-Поддерживаются:
-
-- `case_ids` — точные стабильные ID;
-- `globs` — шаблоны пути к исходным XLSX;
-- `products` — шаблоны продукта;
-- `functionalities` — шаблоны функционала.
-
-Проверка набора:
+Примеры:
 
 ```bash
-qa-cases select --suite smoke --output exports/smoke.xlsx
+qa-cases export --suite smoke
+qa-cases export --suite full-regression --format xlsx
 ```

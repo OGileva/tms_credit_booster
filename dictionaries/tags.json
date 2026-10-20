@@ -1,0 +1,54 @@
+{
+  "tags": [
+    {
+      "id": "regression",
+      "aliases": ["регресс", "регрессионный"],
+      "description": "Кейс входит в регулярный регрессионный набор"
+    },
+    {
+      "id": "smoke",
+      "aliases": ["смоук", "дымовой"],
+      "description": "Минимальная проверка доступности критичного пути"
+    },
+    {
+      "id": "critical",
+      "aliases": ["критичный", "release critical"],
+      "description": "Критичная проверка релиза"
+    },
+    {
+      "id": "positive",
+      "aliases": ["позитивный"],
+      "description": "Позитивный сценарий"
+    },
+    {
+      "id": "negative",
+      "aliases": ["негативный"],
+      "description": "Негативный сценарий"
+    },
+    {
+      "id": "boundary",
+      "aliases": ["границы", "граничные значения"],
+      "description": "Проверка граничных значений"
+    },
+    {
+      "id": "integration",
+      "aliases": ["интеграция", "интеграционный"],
+      "description": "Проверка интеграции"
+    },
+    {
+      "id": "permissions",
+      "aliases": ["права", "роли"],
+      "description": "Проверка прав доступа"
+    },
+    {
+      "id": "api",
+      "aliases": ["апи"],
+      "description": "Проверка API"
+    },
+    {
+      "id": "ui",
+      "aliases": ["интерфейс"],
+      "description": "Проверка пользовательского интерфейса"
+    }
+  ]
+}

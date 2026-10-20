@@ -3,11 +3,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "qa-test-cases"
-version = "0.1.0"
-description = "Validation, indexing and selection for an Excel-based QA test-case repository"
+name = "tms-cb"
+version = "0.2.0"
+description = "AI-first Git catalog for QA test cases"
 requires-python = ">=3.11"
-dependencies = ["openpyxl>=3.1,<4"]
+dependencies = [
+  "openpyxl>=3.1,<4",
+  "python-docx>=1.1,<2"
+]
 
 [project.scripts]
 qa-cases = "qa_cases.cli:main"

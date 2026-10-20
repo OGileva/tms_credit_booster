@@ -1,16 +1,18 @@
 {
   "id": "smoke",
-  "description": "Утверждённый минимальный smoke-набор. Заполнить реальными ID после ревью.",
+  "description": "Все активные кейсы с тегом smoke",
   "include": {
     "case_ids": [],
-    "globs": [],
     "products": [],
-    "functionalities": []
+    "sections": [],
+    "tags": ["smoke"],
+    "statuses": []
   },
   "exclude": {
     "case_ids": [],
-    "globs": [],
     "products": [],
-    "functionalities": []
+    "sections": [],
+    "tags": [],
+    "statuses": ["deprecated"]
   }
 }

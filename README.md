@@ -1,115 +1,133 @@
-# QA test cases
+# TMS CB
 
 - **Status:** draft
 - **Date:** 2026-10-20
 - **Owner:** QATL
 
-Git-репозиторий ручных тест-кейсов с массовым вводом через Excel и воспроизводимыми выборками для регресса или отдельного функционала.
+Текстовый Git-каталог тест-кейсов для работы через Claude Code, Codex и Cursor. QA формулирует задачу естественным языком, агент добавляет кейсы из приложенного файла или формирует нужную выборку.
 
 ---
 
-## Быстрый старт
+## Что изменилось
+
+- Тест-кейсы хранятся не в Excel, а по одному в Markdown.
+- Excel, CSV, JSON, DOCX и Markdown-таблицы поддерживаются как массовый импорт.
+- По умолчанию выборка возвращается Markdown-таблицей.
+- XLSX, CSV, JSON и Markdown доступны как явный формат экспорта.
+- Функционал задаётся папкой и `section.json`; регресс — тегом `regression` или suite.
+
+---
+
+## Настройка
 
 ```bash
+cd /Users/ohtakemydrama/Desktop/projects/tms_cb
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
-
-qa-cases new-pack --product credit-booster --function payments --name CBN-1234
 qa-cases validate
-qa-cases index
 ```
 
-Новый файл появится в `cases/credit-booster/payments/CBN-1234.xlsx`. Заполните строки на листе `Тест-кейсы`, затем повторите `validate` и `index`.
+Открывайте корень репозитория в AI-редакторе. Codex использует `AGENTS.md`, Claude Code — `CLAUDE.md`, Cursor — правило `.cursor/rules/test-cases.mdc`.
 
 ---
 
-## Как хранить кейсы
+## Пользовательский флоу
+
+### Добавление
+
+Пример запроса агенту:
+
+> Добавь кейсы из приложенного файла в продукт Credit Booster, скоринг, раздел «История займов». Всем кейсам добавь тег «регресс» и связь с CBN-1234. Не коммить.
+
+Агент проверит файл, назначит отсутствующие ID, создаст Markdown-кейсы, выполнит валидацию и покажет итог. После review QA делает commit и push.
+
+Эквивалентная CLI-команда:
+
+```bash
+qa-cases import \
+  --source /path/to/cases.xlsx \
+  --product credit-booster \
+  --section "История займов" \
+  --tag regression \
+  --task CBN-1234 \
+  --dry-run
+```
+
+После проверки повторить без `--dry-run`.
+
+### Выборка
+
+Пример запроса агенту:
+
+> Выгрузи кейсы по функционалу скоринг «История займов» с тегом «регресс».
+
+Формат не указан — агент возвращает таблицу в чате. Эквивалент:
+
+```bash
+qa-cases export --section "История займов" --tag regression
+```
+
+XLSX:
+
+```bash
+qa-cases export \
+  --section "История займов" \
+  --tag regression \
+  --format xlsx
+```
+
+Файл автоматически сохраняется в `exports/`. Можно задать `--output exports/loan-history.xlsx`.
+
+---
+
+## Полезные команды
+
+| Команда | Назначение |
+|---|---|
+| `qa-cases sections` | Показать продукты, разделы, aliases и префиксы ID |
+| `qa-cases validate` | Проверить кейсы, ID, теги и структуру |
+| `qa-cases index` | Обновить текстовый индекс |
+| `qa-cases list --section "История займов"` | Показать краткий список |
+| `qa-cases list --tag regression` | Найти активные регрессионные кейсы |
+| `qa-cases export ...` | Вернуть таблицу или создать файл |
+| `qa-cases import ...` | Массово добавить приложенный файл |
+| `qa-cases create-section ...` | Создать новый функциональный раздел |
+
+Фильтры `--product`, `--section`, `--tag`, `--id`, `--search`, `--status` и `--suite` можно комбинировать. Повторённые теги применяются по логике И.
+
+---
+
+## Структура
 
 ```text
-cases/
-└── credit-booster/
-    ├── payments/
-    │   ├── CBN-1234.xlsx
-    │   └── CBN-1300.xlsx
-    └── scoring/
-        └── CBN-1400.xlsx
+cases/credit-booster/scoring/loan-history/
+├── section.json
+├── CB-SCR-LH-0001.md
+└── CB-SCR-LH-0002.md
 ```
 
-Путь задаёт продукт и функционал. Внутри XLSX остаются только пять колонок из `AGENTS.md`; служебные теги в файл не добавляются.
-
-Рекомендуемый `Name`:
-
-```text
-CB-PAY-0001 — Успешное проведение платежа
-```
-
-ID стабилен и используется в suites. Название после тире можно уточнять.
-
----
-
-## Команды
-
-| Команда | Результат |
+| Путь | Назначение |
 |---|---|
-| `qa-cases validate` | Проверяет все исходные XLSX и дубли ID/названий |
-| `qa-cases index` | Пересобирает `generated/index.json` |
-| `qa-cases list --function payments` | Показывает кейсы функционала |
-| `qa-cases list --search таймаут` | Ищет текст во всех пяти полях |
-| `qa-cases select --function payments --output exports/payments.xlsx` | Выгружает функциональную выборку |
-| `qa-cases select --suite full-regression --output exports/regression.xlsx` | Выгружает suite |
-| `qa-cases new-pack ...` | Создаёт новый пакет из Excel-шаблона |
-
-Фильтры `--product`, `--function`, `--id` и `--search` можно комбинировать. Несколько значений одного фильтра задаются повторением параметра.
+| `cases/` | Канонические Markdown-кейсы |
+| `dictionaries/tags.json` | Допустимые теги и русские aliases |
+| `suites/` | Правила smoke и regression-наборов |
+| `generated/index.json` | Производный полнотекстовый индекс |
+| `exports/` | Локальные выгрузки, не коммитятся |
+| `_templates/` | Примеры кейса и таблицы импорта |
+| `schemas/` | Формальная схема метаданных |
+| `qa_cases/` | CLI импорта, поиска, проверки и экспорта |
 
 ---
 
-## Наборы регресса
+## Перед коммитом
 
-- `full-regression.json` включает все кейсы.
-- `smoke.json` и `release-critical.json` изначально пусты: их нужно наполнить подтверждёнными ID или правилами по функционалам.
-- Правила suite поддерживают `case_ids`, `globs`, `products`, `functionalities` и блок исключений.
-
-Пример:
-
-```json
-{
-  "id": "payments-regression",
-  "description": "Регресс платежей",
-  "include": {
-    "case_ids": ["CB-PAY-0001"],
-    "globs": ["cases/credit-booster/payments/*.xlsx"],
-    "products": [],
-    "functionalities": []
-  },
-  "exclude": {
-    "case_ids": [],
-    "globs": [],
-    "products": [],
-    "functionalities": []
-  }
-}
+```bash
+make check
+make test
+make index
+git diff --check
+git status
 ```
 
----
-
-## Совместная работа
-
-1. Создать отдельную ветку.
-2. Добавить или изменить исходный XLSX.
-3. Обновить suite, если состав набора изменился.
-4. Выполнить `make check test index`.
-5. В Merge Request указать задачу, функционал, добавленные/изменённые ID и влияние на регресс.
-
-Подробно: [`regulations/reglament-test-cases-workflow.md`](regulations/reglament-test-cases-workflow.md).
-
----
-
-## Разделы
-
-| Раздел | Назначение |
-|---|---|
-| [`cases/`](cases/) | Исходные тест-кейсы |
-| [`suites/`](suites/) | Наборы регресса |
-| [`_templates/`](_templates/) | Excel-шаблон |
-| [`regulations/`](regulations/) | Регламент изменений |
+Коммитятся новые `.md`, изменённые `section.json`/suites/словари и `generated/index.json`. Исходный приложенный файл и содержимое `exports/` не коммитятся.

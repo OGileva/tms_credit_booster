@@ -1,10 +1,12 @@
 .PHONY: check index test
 
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+
 check:
-	python -m qa_cases validate
+	$(PYTHON) -m qa_cases validate
 
 index:
-	python -m qa_cases index
+	$(PYTHON) -m qa_cases index
 
 test:
-	python -m unittest discover -s tests -v
+	$(PYTHON) -m unittest discover -s tests -v

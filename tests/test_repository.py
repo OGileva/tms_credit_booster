@@ -1,24 +1,34 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
+import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 
-from openpyxl import load_workbook
+from docx import Document
+from openpyxl import Workbook, load_workbook
 
+from qa_cases.cli import main
 from qa_cases.core import (
+    CANONICAL_HEADERS,
     TestCase,
+    create_section,
     export_cases,
     import_cases,
     load_sections,
     render_table,
     resolve_section,
+    resolve_section_queries,
     resolve_tags,
     select_cases,
     validate_repository,
     write_case,
+    write_index,
 )
 
 
@@ -26,6 +36,8 @@ class RepositoryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        shutil.copytree(Path(__file__).resolve().parents[1] / "schemas", self.root / "schemas")
+        (self.root / "project.json").write_text("{}", encoding="utf-8")
         section = self.root / "cases" / "credit-booster" / "scoring" / "loan-history"
         section.mkdir(parents=True)
         (section / "section.json").write_text(
@@ -45,8 +57,8 @@ class RepositoryTests(unittest.TestCase):
             json.dumps(
                 {
                     "tags": [
-                        {"id": "regression", "aliases": ["регресс"]},
-                        {"id": "positive", "aliases": ["позитивный"]},
+                        {"id": "regression", "aliases": ["регресс"], "description": "Регрессионные проверки"},
+                        {"id": "positive", "aliases": ["позитивный"], "description": "Позитивные проверки"},
                     ]
                 },
                 ensure_ascii=False,
@@ -83,6 +95,9 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual([], issues)
         self.assertEqual("CB-SCR-LH-0001", cases[0].id)
         self.assertEqual("История займов", cases[0].section_name)
+        index = json.loads(write_index(self.root, cases).read_text(encoding="utf-8"))
+        self.assertEqual(1, index["case_count"])
+        self.assertEqual(case.id, index["cases"][0]["id"])
 
     def test_mass_csv_import_allocates_ids_and_resolves_tag_alias(self):
         csv_path = self.root / "input.csv"
@@ -138,6 +153,329 @@ class RepositoryTests(unittest.TestCase):
         write_case(duplicate_path, second)
         _, issues = validate_repository(self.root)
         self.assertTrue(any("имя файла" in issue.message or "ID дублируется" in issue.message for issue in issues))
+
+    def _input_record(self, name="Новый кейс", **values):
+        return dict(zip(CANONICAL_HEADERS, [name, "Описание", "Создан клиент", "Открыть раздел", "Раздел открыт"]), **values)
+
+    def _import_records(self, records, dry_run=False):
+        source = self.root / "input.json"
+        source.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+        return import_cases(
+            self.root, source_path=source, section=resolve_section(self.root, "История займов"), dry_run=dry_run
+        )
+
+    def _cli(self, *args):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = main(["--root", str(self.root), *args])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_metadata_schema_rejects_missing_unknown_and_mistyped_fields(self):
+        case = self._case()
+        path = self.root / case.file
+        write_case(path, case)
+        original = path.read_text(encoding="utf-8")
+        variants = [
+            ('tasks = ["CBN-1"]\n', "", "tasks"),
+            ('tags = ["regression"]\n', "", "tags"),
+            ('tasks = ["CBN-1"]', 'tasks = "CBN-1"', "tasks"),
+            ('tasks = ["CBN-1"]', 'tasks = [1]', "tasks"),
+            ('tasks = ["CBN-1"]', 'tasks = ["CBN-1", "CBN-1"]', "tasks"),
+            ('title = "Отображение истории"', 'title = 123', "title"),
+            ('source = "cases.csv"', 'source = 123', "source"),
+            ('source = "cases.csv"', 'unexpected = "value"', "unexpected"),
+        ]
+        for before, after, field in variants:
+            with self.subTest(field=field, after=after):
+                path.write_text(original.replace(before, after), encoding="utf-8")
+                cases, issues = validate_repository(self.root)
+                self.assertEqual([], cases)
+                self.assertTrue(any(field in issue.message for issue in issues), issues)
+
+    def test_create_section_rejects_duplicate_prefix_and_empty_name_without_writing(self):
+        for name, prefix in [("Другой раздел", "CB-SCR-LH"), ("  ", "CB-NEW")]:
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    create_section(self.root, product="credit-booster", path="other", name=name, id_prefix=prefix)
+                self.assertFalse((self.root / "cases/credit-booster/other").exists())
+
+    def test_create_section_and_validate_reject_invalid_config(self):
+        section = create_section(self.root, product="credit-booster", path="other", name="Другой раздел", id_prefix="CB-NEW")
+        _, issues = validate_repository(self.root)
+        self.assertEqual([], issues)
+        config = section.directory / "section.json"
+        for payload in [
+            {"name": "Другой раздел", "id_prefix": "CB-SCR-LH"},
+            {"name": "", "id_prefix": "CB-NEW"},
+            {"name": "Другой раздел", "id_prefix": "CB-NEW", "aliases": "alias"},
+        ]:
+            with self.subTest(payload=payload):
+                config.write_text(json.dumps(payload), encoding="utf-8")
+                _, issues = validate_repository(self.root)
+                self.assertTrue(issues)
+
+    def test_tag_dictionary_rejects_duplicate_ids_and_ambiguous_aliases(self):
+        path = self.root / "dictionaries/tags.json"
+        for tags in [
+            [{"id": "regression", "description": "Регресс"}] * 2,
+            [{"id": "regression", "description": "Регресс", "aliases": ["positive"]},
+             {"id": "positive", "description": "Позитивный"}],
+            [{"id": "regression", "description": "Регресс", "aliases": "регресс"}],
+        ]:
+            with self.subTest(tags=tags):
+                path.write_text(json.dumps({"tags": tags}), encoding="utf-8")
+                _, issues = validate_repository(self.root)
+                self.assertTrue(any(issue.source == "dictionaries/tags.json" for issue in issues))
+
+    def test_validate_rejects_malformed_suite_and_invalid_references(self):
+        directory = self.root / "suites"
+        directory.mkdir()
+        path = directory / "smoke.json"
+        payloads = [
+            "{bad json",
+            json.dumps({"id": "other", "include": {}}),
+            json.dumps({"id": "smoke", "include": {"unknown": []}}),
+            json.dumps({"id": "smoke", "include": {"tags": "regression"}}),
+            *[json.dumps({"id": "smoke", "include": {key: [value]}}) for key, value in [
+                ("case_ids", "CB-SCR-LH-0042"), ("tags", "unknown"), ("products", "missing"),
+                ("sections", "missing/*"), ("statuses", "unknown"),
+            ]],
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                path.write_text(payload, encoding="utf-8")
+                _, issues = validate_repository(self.root)
+                self.assertTrue(any(issue.source == "suites/smoke.json" for issue in issues), issues)
+                self.assertEqual(2, self._cli("validate")[0])
+
+    def test_valid_suite_selects_only_matching_active_cases_and_applies_exclusions(self):
+        first = self._case()
+        second = replace(self._case("CB-SCR-LH-0002", "Исключённый"), status="draft")
+        third = replace(self._case("CB-SCR-LH-0003", "Черновик"), status="draft")
+        fourth = replace(self._case("CB-SCR-LH-0004", "Без тега регресс"), tags=("positive",))
+        for case in (first, second, third, fourth):
+            write_case(self.root / case.file, case)
+        directory = self.root / "suites"
+        directory.mkdir()
+        (directory / "smoke.json").write_text(json.dumps({
+            "id": "smoke", "include": {"tags": ["regression"]},
+            "exclude": {"case_ids": [second.id]},
+        }), encoding="utf-8")
+        self.assertEqual([], validate_repository(self.root)[1])
+        code, output, error = self._cli("list", "--suite", "smoke", "--status", "all")
+        self.assertEqual(0, code, error)
+        self.assertIn(first.id, output)
+        self.assertNotIn(second.id, output)
+        self.assertIn(third.id, output)
+        self.assertNotIn(fourth.id, output)
+        code, output, error = self._cli("list", "--suite", "smoke")
+        self.assertEqual(0, code, error)
+        self.assertIn(first.id, output)
+        self.assertNotIn(third.id, output)
+
+    def test_cli_list_and_export_resolve_section_alias(self):
+        case = self._case()
+        write_case(self.root / case.file, case)
+        for command in ("list", "export"):
+            code, output, error = self._cli(command, "--section", "История кредитов", "--tag", "регресс")
+            self.assertEqual(0, code, error)
+            self.assertIn(case.id, output)
+
+    def test_section_alias_ambiguity_requires_product_and_preserves_globs(self):
+        other = create_section(self.root, product="other-product", path="scoring/loan-history", name="История займов",
+                               id_prefix="OTHER-LH", aliases=["История кредитов"])
+        with self.assertRaisesRegex(ValueError, "неоднозначен"):
+            resolve_section_queries(self.root, ["История кредитов"])
+        resolved = resolve_section_queries(self.root, ["История кредитов"], ["credit-booster"])
+        self.assertEqual([self._case()], select_cases([self._case()], sections=resolved))
+        self.assertEqual(("scoring/*",), resolve_section_queries(self.root, ["scoring/*"]))
+        self.assertEqual(2, self._cli("export", "--section", "История кредитов")[0])
+        self.assertEqual(other.path, "scoring/loan-history")
+
+    def test_unknown_section_returns_actionable_error(self):
+        code, _, error = self._cli("export", "--section", "Неизвестный раздел")
+        self.assertEqual(2, code)
+        self.assertIn("qa-cases sections", error)
+
+    def test_mixed_explicit_and_automatic_ids_are_reserved_before_allocation(self):
+        for records, expected in [
+            ([self._input_record("Явный", ID="CB-SCR-LH-0001"), self._input_record("Автоматический")],
+             ["CB-SCR-LH-0001", "CB-SCR-LH-0002"]),
+            ([self._input_record("Автоматический"), self._input_record("Явный", ID="CB-SCR-LH-0001")],
+             ["CB-SCR-LH-0002", "CB-SCR-LH-0001"]),
+        ]:
+            with self.subTest(expected=expected):
+                cases = self._import_records(records, dry_run=True)
+                self.assertEqual(expected, [case.id for case in cases])
+                self.assertEqual([], list((self.root / "cases").rglob("CB-*.md")))
+        imported = self._import_records(records)
+        self.assertEqual(expected, [case.id for case in imported])
+        self.assertEqual([], validate_repository(self.root)[1])
+
+    def test_id_conflicts_reject_entire_import(self):
+        for records in [
+            [self._input_record("Первый", ID="CB-SCR-LH-0001"), self._input_record("Второй", ID="CB-SCR-LH-0001")],
+            [self._input_record("CB-SCR-LH-0001 — Конфликт", ID="CB-SCR-LH-0002")],
+        ]:
+            with self.subTest(records=records):
+                with self.assertRaises(ValueError):
+                    self._import_records(records)
+                self.assertEqual([], list((self.root / "cases").rglob("CB-*.md")))
+
+    def test_id_range_exhaustion_writes_no_pending_cases(self):
+        case = self._case("CB-SCR-LH-9998")
+        write_case(self.root / case.file, case)
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                with self.assertRaisesRegex(ValueError, "исчерпан"):
+                    self._import_records([self._input_record("Первый"), self._input_record("Второй")], dry_run=dry_run)
+                self.assertEqual([case.id], [case.id for case in validate_repository(self.root)[0]])
+        result = self._import_records([self._input_record("Последний")])
+        self.assertEqual("CB-SCR-LH-9999", result[0].id)
+        with self.assertRaisesRegex(ValueError, "исчерпан"):
+            self._import_records([self._input_record("Следующий")])
+        self.assertEqual([], validate_repository(self.root)[1])
+
+    def test_missing_required_field_reports_row_and_writes_nothing(self):
+        for field in CANONICAL_HEADERS:
+            with self.subTest(field=field):
+                invalid = self._input_record("Неполный")
+                invalid[field] = ""
+                with self.assertRaisesRegex(ValueError, "input.json:строка 2"):
+                    self._import_records([self._input_record("Полный"), invalid])
+                self.assertEqual([], list((self.root / "cases").rglob("CB-*.md")))
+
+    def test_xlsx_missing_column_on_one_sheet_rejects_entire_import(self):
+        path = self.root / "input.xlsx"
+        workbook = Workbook()
+        for worksheet, headers in [(workbook.active, CANONICAL_HEADERS), (workbook.create_sheet("Неполный"), CANONICAL_HEADERS[:-1])]:
+            worksheet.append(headers)
+            worksheet.append(list(self._input_record().values())[:len(headers)])
+        workbook.save(path)
+        with self.assertRaisesRegex(ValueError, "input.xlsx:Неполный"):
+            import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"))
+        self.assertEqual([], list((self.root / "cases").rglob("CB-*.md")))
+
+    def test_docx_missing_column_in_one_table_rejects_entire_import(self):
+        path = self.root / "input.docx"
+        document = Document()
+        for headers in (CANONICAL_HEADERS, CANONICAL_HEADERS[:-1]):
+            table = document.add_table(rows=1, cols=len(headers))
+            for cell, value in zip(table.rows[0].cells, headers):
+                cell.text = value
+            for cell, value in zip(table.add_row().cells, self._input_record().values()):
+                cell.text = value
+        document.save(path)
+        with self.assertRaisesRegex(ValueError, "input.docx:таблица-2"):
+            import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"))
+        self.assertEqual([], list((self.root / "cases").rglob("CB-*.md")))
+
+    def test_xlsx_empty_leading_rows_do_not_hide_cases(self):
+        path = self.root / "input.xlsx"
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append([None] * 5)
+        worksheet.append(CANONICAL_HEADERS)
+        worksheet.append(list(self._input_record().values()))
+        workbook.create_sheet("Пустой")
+        workbook.save(path)
+        cases = import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"))
+        self.assertEqual(1, len(cases))
+
+    def test_xlsx_imports_cases_from_all_valid_sheets(self):
+        path = self.root / "input.xlsx"
+        workbook = Workbook()
+        for index, worksheet in enumerate((workbook.active, workbook.create_sheet("Второй")), start=1):
+            worksheet.append(CANONICAL_HEADERS)
+            worksheet.append(list(self._input_record(f"Кейс {index}").values()))
+        workbook.save(path)
+        result = import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"))
+        self.assertEqual(["Кейс 1", "Кейс 2"], [case.title for case in result])
+        self.assertEqual([], validate_repository(self.root)[1])
+
+    def test_docx_imports_cases_from_all_valid_tables(self):
+        path = self.root / "input.docx"
+        document = Document()
+        for index in (1, 2):
+            table = document.add_table(rows=1, cols=5)
+            for cell, value in zip(table.rows[0].cells, CANONICAL_HEADERS):
+                cell.text = value
+            for cell, value in zip(table.add_row().cells, self._input_record(f"Кейс {index}").values()):
+                cell.text = value
+        document.save(path)
+        result = import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"))
+        self.assertEqual(["Кейс 1", "Кейс 2"], [case.title for case in result])
+        self.assertEqual([], validate_repository(self.root)[1])
+
+    def test_tsv_import_preserves_tabs_and_newlines_in_quoted_fields(self):
+        path = self.root / "input.tsv"
+        case = replace(self._case(), description="Значения\tA | B\nВторая строка")
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle, delimiter="\t")
+            writer.writerow(CANONICAL_HEADERS)
+            writer.writerow(case.table_row())
+        result = import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"))
+        self.assertEqual(case.table_row(), result[0].table_row())
+
+    def test_xlsx_incomplete_row_reports_sheet_and_actual_row(self):
+        path = self.root / "input.xlsx"
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Кейсы"
+        worksheet.append(CANONICAL_HEADERS)
+        worksheet.append(list(self._input_record("Первый").values()))
+        worksheet.append(list(self._input_record("Неполный").values())[:-1])
+        workbook.save(path)
+        with self.assertRaisesRegex(ValueError, "input.xlsx:Кейсы:строка 3.*Expected Result"):
+            import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"))
+        self.assertEqual([], list((self.root / "cases").rglob("CB-*.md")))
+
+    def test_export_import_roundtrip_preserves_all_five_fields(self):
+        case = replace(self._case(), description="Значения A | B, путь C:\\files\\, <br> и &lt;br&gt;\nВторая строка")
+        for format_name, suffix in [("xlsx", "xlsx"), ("csv", "csv"), ("json", "json"), ("markdown", "md")]:
+            with self.subTest(format=format_name):
+                path = self.root / f"roundtrip.{suffix}"
+                export_cases(path, [case], format_name)
+                result = import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"), dry_run=True)
+                self.assertEqual([case.table_row()], [item.table_row() for item in result])
+
+    def test_markdown_escaped_pipes_backslashes_and_edge_pipes_preserve_content(self):
+        for value in ["|A|", "A \\| B", "A \\\\| B", "C:\\path\\", "<br /> & <b>текст</b>"]:
+            with self.subTest(value=value):
+                case = replace(self._case(), description=value)
+                path = self.root / "roundtrip.md"
+                export_cases(path, [case], "markdown")
+                result = import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"), dry_run=True)
+                self.assertEqual(case.table_row(), result[0].table_row())
+
+    def test_xlsx_formula_like_description_remains_literal_text(self):
+        case = replace(self._case(), description="=1+1")
+        path = self.root / "literal.xlsx"
+        export_cases(path, [case], "xlsx")
+        for data_only in (True, False):
+            workbook = load_workbook(path, data_only=data_only)
+            self.assertEqual("=1+1", workbook.active["B2"].value)
+            self.assertEqual("s", workbook.active["B2"].data_type)
+            workbook.close()
+        result = import_cases(self.root, source_path=path, section=resolve_section(self.root, "История займов"))
+        self.assertEqual(case.table_row(), result[0].table_row())
+
+    def test_cli_import_dry_run_then_export_and_index(self):
+        source = self.root / "input.json"
+        source.write_text(json.dumps([self._input_record()]), encoding="utf-8")
+        args = ["import", "--source", str(source), "--section", "История кредитов", "--tag", "регресс", "--task", "CBN-42"]
+        code, output, error = self._cli(*args, "--dry-run")
+        self.assertEqual(0, code, error)
+        self.assertIn("Проверено без записи: 1", output)
+        self.assertEqual([], list((self.root / "cases").rglob("CB-*.md")))
+        self.assertEqual(0, self._cli(*args)[0])
+        self.assertEqual(0, self._cli("index")[0])
+        for format_name, suffix in [("xlsx", "xlsx"), ("csv", "csv"), ("json", "json"), ("markdown", "md")]:
+            with self.subTest(format=format_name):
+                code, _, error = self._cli("export", "--section", "История кредитов", "--format", format_name,
+                                           "--output", f"exports/selected.{suffix}")
+                self.assertEqual(0, code, error)
+                self.assertTrue((self.root / f"exports/selected.{suffix}").exists())
 
 
 if __name__ == "__main__":

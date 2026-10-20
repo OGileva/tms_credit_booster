@@ -15,6 +15,7 @@ from .core import (
     load_suite,
     render_table,
     resolve_section,
+    resolve_section_queries,
     resolve_tags,
     select_cases,
     validate_repository,
@@ -91,11 +92,12 @@ def _filtered(root: Path, args: argparse.Namespace):
     cases = _checked_cases(root)
     suite = load_suite(root, args.suite) if args.suite else None
     tags = resolve_tags(root, args.tag) if args.tag else ()
+    sections = resolve_section_queries(root, args.section, args.product)
     return select_cases(
         cases,
         suite=suite,
         products=args.product,
-        sections=args.section,
+        sections=sections,
         tags=tags,
         ids=args.id,
         search=args.search,

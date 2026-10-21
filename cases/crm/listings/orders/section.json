@@ -1,0 +1,7 @@
+{
+  "name": "Заявки",
+  "aliases": [
+    "Листинг/Заявки"
+  ],
+  "id_prefix": "CRM-LIST-ORDERS"
+}

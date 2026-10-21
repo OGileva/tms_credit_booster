@@ -12,14 +12,12 @@ from .core import (
     export_cases,
     import_cases,
     load_sections,
-    load_suite,
     render_table,
     resolve_section,
     resolve_section_queries,
     resolve_tags,
     select_cases,
     validate_repository,
-    write_index,
 )
 
 
@@ -31,7 +29,6 @@ def _root(value: str) -> Path:
 
 
 def _add_filters(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--suite", help="имя набора из suites/")
     parser.add_argument("--product", action="append", default=[], help="продукт или glob; можно повторять")
     parser.add_argument("--section", action="append", default=[], help="путь или название функционала; можно повторять")
     parser.add_argument("--tag", action="append", default=[], help="обязательный тег; можно повторять")
@@ -45,7 +42,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", type=_root, default=Path.cwd(), help="корень репозитория")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("validate", help="проверить структуру и содержимое всех кейсов")
-    commands.add_parser("index", help="пересобрать generated/index.json")
     commands.add_parser("sections", help="показать доступные продукты и разделы")
 
     list_parser = commands.add_parser("list", help="показать краткий список кейсов")
@@ -58,6 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
         export_parser = commands.add_parser(name, help=help_text)
         _add_filters(export_parser)
         export_parser.add_argument("--format", choices=FORMATS, default="table")
+        export_parser.add_argument(
+            "--include-metadata", action="store_true", help="добавить колонки ID, Tags, Status, Tasks; JSON всегда содержит метаданные"
+        )
         export_parser.add_argument("--output", type=Path, help="путь файла; table без output печатается в терминал")
 
     import_parser = commands.add_parser("import", help="массово добавить кейсы из приложенного файла")
@@ -90,12 +89,10 @@ def _checked_cases(root: Path):
 
 def _filtered(root: Path, args: argparse.Namespace):
     cases = _checked_cases(root)
-    suite = load_suite(root, args.suite) if args.suite else None
     tags = resolve_tags(root, args.tag) if args.tag else ()
     sections = resolve_section_queries(root, args.section, args.product)
     return select_cases(
         cases,
-        suite=suite,
         products=args.product,
         sections=sections,
         tags=tags,
@@ -122,11 +119,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             cases = _checked_cases(root)
             print(f"OK: кейсов {len(cases)}, разделов {len(load_sections(root))}")
             return 0
-        if args.command == "index":
-            cases = _checked_cases(root)
-            output = write_index(root, cases)
-            print(f"Индекс обновлён: {output.relative_to(root)}; кейсов {len(cases)}")
-            return 0
         if args.command == "sections":
             print("Product\tSection\tName\tAliases\tID prefix")
             for section in load_sections(root):
@@ -144,12 +136,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not cases:
                 raise ValueError("по заданным условиям кейсы не найдены")
             if args.format == "table" and args.output is None:
-                print(render_table(cases), end="")
+                print(render_table(cases, include_metadata=args.include_metadata), end="")
                 return 0
             output = args.output or _default_output(root, args.format)
             if not output.is_absolute():
                 output = root / output
-            export_cases(output, cases, args.format)
+            export_cases(output, cases, args.format, include_metadata=args.include_metadata)
             print(f"Выгружено: {len(cases)}; файл: {output}")
             return 0
         if args.command == "import":

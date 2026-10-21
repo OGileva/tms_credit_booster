@@ -1,13 +1,13 @@
 +++
-id = "CB-AREA-FUNC-0001"
+id = "1"
 title = "Понятное название проверки"
 status = "active"
-tags = ["regression"]
+tags = ["регресс"]
 tasks = ["CBN-0000"]
 source = "input.xlsx"
 +++
 
-# CB-AREA-FUNC-0001 — Понятное название проверки
+# 1 — Понятное название проверки
 
 ## Description
 

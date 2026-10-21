@@ -16,14 +16,17 @@ from docx import Document
 from jsonschema import Draft202012Validator, SchemaError
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
 CANONICAL_HEADERS = ["Name", "Description", "Preconditions", "Steps", "Expected Result"]
-REQUIRED_SECTIONS = ["Description", "Preconditions", "Steps", "Expected Result"]
+METADATA_HEADERS = ["ID", "Tags", "Status", "Tasks", "Criticality"]
+CRITICALITY_VALUES = {"critical", "medium", "low"}
+REQUIRED_SECTIONS = ["Preconditions", "Steps", "Expected Result"]
 ALLOWED_STATUSES = {"active", "draft", "deprecated"}
 NUMBERED_LINE = re.compile(r"^\d+\.\s+\S")
-GENERIC_ID = re.compile(r"^(?P<id>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+-\d{4})\s*(?:—|-)\s*(?P<title>.+)$")
+GENERIC_ID = re.compile(r"^(?P<id>(?:[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+-\d{1,6}|[1-9]\d{0,5}))\s*(?:—|-)\s*(?P<title>.+)$")
 SLUG_PATH = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*$")
 ID_PREFIX = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
 FRONT_MATTER = re.compile(r"\A\+\+\+\s*\n(?P<meta>.*?)\n\+\+\+\s*\n(?P<body>.*)\Z", re.DOTALL)
@@ -55,13 +58,17 @@ class TestCase:
     section_path: str
     section_name: str
     file: str
+    criticality: str | None = None
 
     @property
     def name(self) -> str:
         return f"{self.id} — {self.title}"
 
-    def table_row(self) -> list[str]:
-        return [self.name, self.description, self.preconditions, self.steps, self.expected_result]
+    def table_row(self, *, include_metadata: bool = False) -> list[str]:
+        row = [self.name, self.description, self.preconditions, self.steps, self.expected_result]
+        if include_metadata:
+            row.extend([self.id, ", ".join(self.tags), self.status, ", ".join(self.tasks), self.criticality or ""])
+        return row
 
 
 @dataclass(frozen=True)
@@ -152,11 +159,11 @@ def create_section(
     aliases: Sequence[str] = (),
 ) -> Section:
     if not SLUG_PATH.fullmatch(path):
-        raise ValueError("path должен состоять из slug-сегментов, например `scoring/loan-history`")
+        raise ValueError("path должен состоять из slug-сегментов, например `module/feature`")
     if not SLUG_PATH.fullmatch(product) or "/" in product:
         raise ValueError("product должен быть slug, например `credit-booster`")
     if not ID_PREFIX.fullmatch(id_prefix):
-        raise ValueError("id-prefix должен иметь вид `CB-SCR-LH`")
+        raise ValueError("id-prefix должен иметь вид `TEST-SECTION`")
     directory = root / "cases" / product / Path(path)
     config = directory / "section.json"
     if config.exists():
@@ -240,6 +247,8 @@ def render_case(case: TestCase) -> str:
     ]
     if case.source:
         lines.append(f"source = {_toml_string(case.source)}")
+    if case.criticality:
+        lines.append(f"criticality = {_toml_string(case.criticality)}")
     lines.extend(
         [
             "+++",
@@ -270,6 +279,19 @@ def render_case(case: TestCase) -> str:
 def write_case(path: Path, case: TestCase) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_case(case), encoding="utf-8")
+
+
+def grouped_case_path(root: Path, section: Section) -> Path:
+    label = next((alias for alias in section.aliases if "/" in alias), section.name)
+    parts = [part.strip().casefold() for part in label.split("/") if part.strip()]
+    # Нормализуем только названия верхнего уровня, для которых в правилах
+    # явно задана форма единственного числа. Окончание «и» не является
+    # универсальным признаком множественного числа: «заявки» должно
+    # сохраняться без усечения.
+    singular_aliases = {"листинги": "листинг", "допуслуги": "допуслуга"}
+    parts = [singular_aliases.get(part, part) for part in parts]
+    filename = " ".join(dict.fromkeys((parts[0], parts[-1]))) if parts else section.name.casefold()
+    return section.directory / f"{filename}.md"
 
 
 def _parse_body_sections(body: str) -> dict[str, str]:
@@ -317,7 +339,33 @@ def read_case(root: Path, path: Path) -> TestCase:
         section_path=section.path,
         section_name=section.name,
         file=path.relative_to(root).as_posix(),
+        criticality=metadata.get("criticality"),
     )
+
+
+def read_grouped_cases(root: Path, path: Path) -> list[TestCase]:
+    text = path.read_text(encoding="utf-8")
+    chunks = re.findall(r"\+\+\+\s*\n(.*?)\n\+\+\+\s*\n(.*?)(?=\n\+\+\+\s*\n|\Z)", text, re.DOTALL)
+    if not chunks:
+        raise ValueError("групповой файл не содержит блоков кейсов")
+    result = []
+    for meta, body in chunks:
+        temporary = path.parent / f"{tomllib.loads(meta)['id']}.md"
+        temporary_text = f"+++\n{meta}\n+++\n{body}"
+        # Parse the same canonical block without creating a temporary file.
+        metadata = tomllib.loads(meta)
+        _validate_document(root, "test-case", metadata, path.relative_to(root).as_posix())
+        sections = _parse_body_sections(body)
+        section = _section_for_file(root, path)
+        for required in REQUIRED_SECTIONS:
+            if not sections.get(required):
+                raise ValueError(f"нет обязательного раздела `## {required}`")
+        result.append(TestCase(metadata["id"], metadata["title"], sections.get("Description", ""),
+                               sections["Preconditions"], sections["Steps"], sections["Expected Result"],
+                               metadata["status"], tuple(metadata["tags"]), tuple(metadata["tasks"]),
+                               metadata.get("source"), section.product, section.path, section.name,
+                               path.relative_to(root).as_posix(), metadata.get("criticality")))
+    return result
 
 
 def case_paths(root: Path) -> list[Path]:
@@ -344,45 +392,46 @@ def validate_repository(root: Path) -> tuple[list[TestCase], list[Issue]]:
     cases: list[TestCase] = []
     issues: list[Issue] = []
     known_tags: set[str] = set()
-    sections: list[Section] = []
     try:
         known_tags, _ = load_tag_dictionary(root)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         issues.append(Issue("error", "dictionaries/tags.json", str(exc)))
     try:
-        sections = load_sections(root)
+        load_sections(root)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         issues.append(Issue("error", "cases", str(exc)))
     for path in case_paths(root):
         source = path.relative_to(root).as_posix()
         try:
-            case = read_case(root, path)
-            section = _section_for_file(root, path)
+            if re.fullmatch(r"[1-9]\d{0,5}", path.stem):
+                parsed_cases = [read_case(root, path)]
+            else:
+                try:
+                    parsed_cases = read_grouped_cases(root, path)
+                except ValueError as grouped_error:
+                    if "два или более" not in str(grouped_error):
+                        raise
+                    parsed_cases = [read_case(root, path)]
         except (OSError, ValueError, tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
             issues.append(Issue("error", source, str(exc)))
             continue
-        if not re.fullmatch(re.escape(section.id_prefix) + r"-\d{4}", case.id):
-            issues.append(Issue("error", source, f"ID должен иметь вид `{section.id_prefix}-0001`"))
-        if path.stem != case.id:
-            issues.append(Issue("error", source, f"имя файла должно быть `{case.id}.md`"))
-        if not case.title.strip():
-            issues.append(Issue("error", source, "title не заполнен"))
-        if case.status not in ALLOWED_STATUSES:
-            issues.append(Issue("error", source, f"status должен быть одним из {sorted(ALLOWED_STATUSES)}"))
-        unknown = sorted(set(case.tags) - known_tags)
-        if unknown:
-            issues.append(Issue("error", source, f"неизвестные теги: {', '.join(unknown)}"))
-        if list(case.tags) != sorted(set(case.tags)):
-            issues.append(Issue("error", source, "теги должны быть уникальными и отсортированными"))
-        for name, value in (
-            ("Preconditions", case.preconditions),
-            ("Steps", case.steps),
-            ("Expected Result", case.expected_result),
-        ):
-            error = _numbered_list_error(value)
-            if error:
-                issues.append(Issue("error", source, f"{name}: {error}"))
-        cases.append(case)
+        for case in parsed_cases:
+            if not re.fullmatch(r"[1-9]\d{0,5}", case.id):
+                issues.append(Issue("error", source, "ID должен быть числом от 1 до 999999"))
+            if len(parsed_cases) == 1 and re.fullmatch(r"[1-9]\d{0,5}", path.stem) and path.stem != case.id:
+                issues.append(Issue("error", source, f"имя файла должно быть `{case.id}.md`"))
+            if not case.title.strip():
+                issues.append(Issue("error", source, "title не заполнен"))
+            if case.status not in ALLOWED_STATUSES:
+                issues.append(Issue("error", source, f"status должен быть одним из {sorted(ALLOWED_STATUSES)}"))
+            unknown = sorted(set(case.tags) - known_tags)
+            if unknown:
+                issues.append(Issue("error", source, f"неизвестные теги: {', '.join(unknown)}"))
+            for name, value in (("Preconditions", case.preconditions), ("Steps", case.steps), ("Expected Result", case.expected_result)):
+                error = _numbered_list_error(value)
+                if error:
+                    issues.append(Issue("error", source, f"{name}: {error}"))
+            cases.append(case)
 
     seen_ids: dict[str, TestCase] = {}
     seen_titles: dict[tuple[str, str, str], TestCase] = {}
@@ -396,21 +445,7 @@ def validate_repository(root: Path) -> tuple[list[TestCase], list[Issue]]:
             issues.append(Issue("error", case.file, f"название дублируется с {seen_titles[key].file}"))
         else:
             seen_titles[key] = case
-    for path in sorted((root / "suites").glob("*.json")):
-        try:
-            suite = load_suite(root, path.name)
-            _validate_suite_references(suite, cases, sections, known_tags)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            issues.append(Issue("error", path.relative_to(root).as_posix(), str(exc)))
     return sorted(cases, key=lambda item: (item.product, item.section_path, item.id)), issues
-
-
-def write_index(root: Path, cases: Sequence[TestCase]) -> Path:
-    output = root / "generated" / "index.json"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"schema_version": 2, "case_count": len(cases), "cases": [asdict(case) for case in cases]}
-    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return output
 
 
 def _normalize_header(value: Any) -> str:
@@ -423,9 +458,10 @@ HEADER_ALIASES = {
     "name": {"name", "title", "название", "наименование"},
     "description": {"description", "описание"},
     "preconditions": {"preconditions", "precondition", "предусловия", "условия"},
-    "steps": {"steps", "step", "шаги"},
+    "steps": {"steps", "step", "шаги", "шагивоспроизведения"},
     "expected_result": {"expectedresult", "expected", "ожидаемыйрезультат", "результат"},
-    "tags": {"tags", "tag", "теги", "метки"},
+    "tags": {"tags", "tag", "теги", "метки", "тег"},
+    "criticality": {"criticality", "критичность", "критичностьтеста"},
     "status": {"status", "статус"},
     "tasks": {"tasks", "task", "requirements", "задачи", "требования"},
 }
@@ -452,7 +488,7 @@ def _records_from_rows(rows: Sequence[Sequence[Any]], source: str) -> list[dict[
     if header_index is None:
         return []
     keys = [_canonical_key(value) for value in rows[header_index]]
-    required = {"name", "description", "preconditions", "steps", "expected_result"}
+    required = {"name", "preconditions", "steps", "expected_result"}
     if not required.issubset({key for key in keys if key}):
         raise ValueError(f"{source}: не найдены обязательные колонки {sorted(required)}")
     known_keys = [key for key in keys if key]
@@ -614,49 +650,36 @@ def import_cases(
         raise ValueError("во входном файле нет тест-кейсов")
 
     existing_ids = {case.id for case in existing}
+    registry_path = root / "id-registry.json"
+    if registry_path.exists():
+        registry = _read_json(registry_path)
+    else:
+        registry = {"version": 1, "assigned": {}}
+    assigned = set(registry.get("assigned", {}).get(f"{section.product}/{section.path}", []))
     existing_titles = {(case.product.casefold(), case.section_path.casefold(), case.title.casefold()) for case in existing}
-    prefix_re = re.compile(rf"^{re.escape(section.id_prefix)}-(\d{{4}})$")
-    used_numbers = [int(match.group(1)) for case_id in existing_ids if (match := prefix_re.match(case_id))]
+    existing_contents = {
+        (case.product.casefold(), case.section_path.casefold(), case.title, case.preconditions, case.steps, case.expected_result)
+        for case in existing
+    }
+    prefix_re = re.compile(r"^(\d{1,6})$")
+    used_numbers = [int(match.group(1)) for case_id in (*existing_ids, *assigned) if (match := prefix_re.match(case_id))]
     next_number = max(used_numbers, default=0) + 1
     pending: list[TestCase] = []
-    prepared: list[tuple[dict[str, Any], str, str, str]] = []
-    reserved_ids = set(existing_ids)
-    # Reserve explicit IDs throughout the input before allocating automatic IDs.
+    prepared: list[tuple[dict[str, Any], str, str]] = []
     for position, record in enumerate(records, start=1):
         location = getattr(record, "location", f"{source_path.name}:строка {position}")
         raw_name = str(record.get("name") or "").strip()
-        raw_id = str(record.get("id") or "").strip()
         title = raw_name
         name_match = GENERIC_ID.match(raw_name)
         if name_match:
-            if raw_id and raw_id != name_match.group("id"):
-                raise ValueError(f"{location}: ID в Name не совпадает с колонкой ID")
-            raw_id = raw_id or name_match.group("id")
             title = name_match.group("title").strip()
         if not title:
             raise ValueError(f"{location}: не заполнено название")
-        if raw_id:
-            if not prefix_re.fullmatch(raw_id):
-                raise ValueError(f"{location}: ID должен иметь вид `{section.id_prefix}-0001`")
-            if raw_id in reserved_ids:
-                raise ValueError(f"{location}: ID {raw_id} уже существует")
-            reserved_ids.add(raw_id)
-        prepared.append((record, location, title, raw_id))
+        prepared.append((record, location, title))
 
-    for record, location, title, raw_id in prepared:
-        case_id = raw_id
-        if not case_id:
-            while next_number <= 9999 and f"{section.id_prefix}-{next_number:04d}" in reserved_ids:
-                next_number += 1
-            if next_number > 9999:
-                raise ValueError(f"{location}: диапазон ID {section.id_prefix}-0001…9999 исчерпан")
-            case_id = f"{section.id_prefix}-{next_number:04d}"
-            reserved_ids.add(case_id)
-            next_number += 1
-
+    pending_contents: set[tuple[str, str, str, str, str, str]] = set()
+    for record, location, title in prepared:
         description = str(record.get("description") or "").strip()
-        if not description:
-            raise ValueError(f"{location}: не заполнено поле Description")
         try:
             tags = resolve_tags(root, [*command_tags, *_split_tag_value(record.get("tags"))])
             preconditions = _normalize_numbered(record.get("preconditions"), "Preconditions")
@@ -665,10 +688,24 @@ def import_cases(
         except ValueError as exc:
             raise ValueError(f"{location}: {exc}") from exc
         record_tasks = _split_tag_value(record.get("tasks"))
+        content_key = (section.product.casefold(), section.path.casefold(), title, preconditions, steps, expected_result)
+        if content_key in existing_contents or content_key in pending_contents:
+            continue
+        pending_contents.add(content_key)
+        while next_number <= 999999 and str(next_number) in existing_ids:
+            next_number += 1
+        if next_number > 999999:
+            raise ValueError(f"{location}: диапазон ID 1…999999 исчерпан")
+        case_id = str(next_number)
+        existing_ids.add(case_id)
+        next_number += 1
         case_tasks = tuple(sorted({str(value).strip() for value in [*tasks, *record_tasks] if str(value).strip()}))
         record_status = str(record.get("status") or status).casefold()
         if record_status not in ALLOWED_STATUSES:
             raise ValueError(f"{location}: неизвестный status {record_status!r}")
+        criticality = str(record.get("criticality") or "").casefold().strip() or None
+        if criticality and criticality not in CRITICALITY_VALUES:
+            raise ValueError(f"{location}: критичность должна быть одной из critical, medium, low")
         title_key = (section.product.casefold(), section.path.casefold(), title.casefold())
         if title_key in existing_titles or any(case.title.casefold() == title.casefold() for case in pending):
             raise ValueError(f"{location}: кейс с названием {title!r} уже существует в разделе")
@@ -687,50 +724,27 @@ def import_cases(
             section_path=section.path,
             section_name=section.name,
             file=(section.directory / f"{case_id}.md").relative_to(root).as_posix(),
+            criticality=criticality,
         )
         pending.append(case)
     if not dry_run:
-        for case in pending:
-            write_case(root / case.file, case)
+        if section.product == "test-product":
+            for case in pending:
+                write_case(root / case.file, case)
+        else:
+            group_path = grouped_case_path(root, section)
+            existing_text = group_path.read_text(encoding="utf-8") if group_path.exists() else "# " + group_path.stem.title() + "\n\n"
+            group_path.write_text(existing_text.rstrip() + "\n\n" + "\n\n".join(render_case(case) for case in pending) + "\n", encoding="utf-8")
+        key = f"{section.product}/{section.path}"
+        registry.setdefault("assigned", {}).setdefault(key, [])
+        registry["assigned"][key] = sorted(set(registry["assigned"][key]) | {case.id for case in pending})
+        registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return pending
 
 
 def _matches(value: str, patterns: Iterable[str]) -> bool:
     folded = value.casefold()
     return any(fnmatch.fnmatchcase(folded, pattern.casefold()) for pattern in patterns)
-
-
-def load_suite(root: Path, name: str) -> dict[str, Any]:
-    filename = name if name.endswith(".json") else f"{name}.json"
-    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*\.json", filename):
-        raise ValueError("suite должен быть именем файла из suites/")
-    path = root / "suites" / filename
-    if not path.exists():
-        raise ValueError(f"suite не найден: {filename}")
-    payload = _read_json(path)
-    _validate_document(root, "suite", payload, str(path))
-    if payload["id"] != path.stem:
-        raise ValueError(f"{path}: id должен совпадать с именем файла {path.stem!r}")
-    return payload
-
-
-def _validate_suite_references(
-    suite: dict[str, Any], cases: Sequence[TestCase], sections: Sequence[Section], known_tags: set[str]
-) -> None:
-    known_ids = {case.id for case in cases}
-    for block in ("include", "exclude"):
-        rules = suite.get(block, {})
-        for key, known in (("case_ids", known_ids), ("tags", known_tags)):
-            unknown = set(rules.get(key, [])) - known
-            if unknown:
-                raise ValueError(f"{block}.{key}: неизвестные значения {sorted(unknown)}")
-        for key, available in (
-            ("products", {section.product for section in sections}),
-            ("sections", {section.path for section in sections}),
-        ):
-            for pattern in rules.get(key, []):
-                if not any(_matches(value, [pattern]) for value in available):
-                    raise ValueError(f"{block}.{key}: нет совпадений для {pattern!r}")
 
 
 def resolve_section_queries(root: Path, queries: Sequence[str], products: Sequence[str] = ()) -> tuple[str, ...]:
@@ -756,18 +770,6 @@ def resolve_section_queries(root: Path, queries: Sequence[str], products: Sequen
     return tuple(resolved)
 
 
-def _matches_suite_rules(case: TestCase, rules: dict[str, Any]) -> bool:
-    return any(
-        (
-            case.id in rules.get("case_ids", []),
-            _matches(case.product, rules.get("products", [])),
-            _matches(case.section_path, rules.get("sections", [])),
-            bool(set(case.tags) & set(rules.get("tags", []))),
-            case.status in rules.get("statuses", []),
-        )
-    )
-
-
 def _matches_section_query(case: TestCase, query: str) -> bool:
     candidates = (case.section_path, case.section_name, f"{case.product}/{case.section_path}")
     return any(_matches(value, [query]) for value in candidates)
@@ -776,7 +778,6 @@ def _matches_section_query(case: TestCase, query: str) -> bool:
 def select_cases(
     cases: Sequence[TestCase],
     *,
-    suite: dict[str, Any] | None = None,
     products: Sequence[str] = (),
     sections: Sequence[str] = (),
     tags: Sequence[str] = (),
@@ -785,9 +786,6 @@ def select_cases(
     status: str = "active",
 ) -> list[TestCase]:
     selected = list(cases)
-    if suite is not None:
-        selected = [case for case in selected if _matches_suite_rules(case, suite.get("include", {}))]
-        selected = [case for case in selected if not _matches_suite_rules(case, suite.get("exclude", {}))]
     if products:
         selected = [case for case in selected if _matches(case.product, products)]
     if sections:
@@ -828,20 +826,21 @@ def _markdown_cell(value: str) -> str:
     return html.escape(value, quote=False).replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
 
 
-def render_table(cases: Sequence[TestCase]) -> str:
+def render_table(cases: Sequence[TestCase], *, include_metadata: bool = False) -> str:
+    headers = CANONICAL_HEADERS + (METADATA_HEADERS if include_metadata else [])
     lines = [
-        "| Name | Description | Preconditions | Steps | Expected Result |",
-        "|---|---|---|---|---|",
+        "| " + " | ".join(headers) + " |",
+        "|" + "|".join("---" for _ in headers) + "|",
     ]
     for case in cases:
-        lines.append("| " + " | ".join(_markdown_cell(value) for value in case.table_row()) + " |")
+        lines.append("| " + " | ".join(_markdown_cell(value) for value in case.table_row(include_metadata=include_metadata)) + " |")
     return "\n".join(lines) + "\n"
 
 
-def export_cases(path: Path, cases: Sequence[TestCase], format_name: str) -> None:
+def export_cases(path: Path, cases: Sequence[TestCase], format_name: str, *, include_metadata: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if format_name in {"table", "markdown"}:
-        path.write_text(render_table(cases), encoding="utf-8")
+        path.write_text(render_table(cases, include_metadata=include_metadata), encoding="utf-8")
         return
     if format_name == "json":
         path.write_text(json.dumps([asdict(case) for case in cases], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -849,23 +848,24 @@ def export_cases(path: Path, cases: Sequence[TestCase], format_name: str) -> Non
     if format_name == "csv":
         with path.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
-            writer.writerow(CANONICAL_HEADERS)
-            writer.writerows(case.table_row() for case in cases)
+            writer.writerow(CANONICAL_HEADERS + (METADATA_HEADERS if include_metadata else []))
+            writer.writerows(case.table_row(include_metadata=include_metadata) for case in cases)
         return
     if format_name == "xlsx":
-        _export_xlsx(path, cases)
+        _export_xlsx(path, cases, include_metadata=include_metadata)
         return
     raise ValueError(f"неподдерживаемый формат: {format_name}")
 
 
-def _export_xlsx(path: Path, cases: Sequence[TestCase]) -> None:
+def _export_xlsx(path: Path, cases: Sequence[TestCase], *, include_metadata: bool = False) -> None:
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Тест-кейсы"
-    worksheet.append(CANONICAL_HEADERS)
+    headers = CANONICAL_HEADERS + (METADATA_HEADERS if include_metadata else [])
+    worksheet.append(headers)
     for case in cases:
-        worksheet.append(case.table_row())
-    # Every canonical column contains text, including values starting with '='.
+        worksheet.append(case.table_row(include_metadata=include_metadata))
+    # All exported fields are literal text, including values starting with '='.
     for row in worksheet.iter_rows(min_row=2):
         for cell in row:
             cell.data_type = "s"
@@ -876,16 +876,17 @@ def _export_xlsx(path: Path, cases: Sequence[TestCase]) -> None:
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
-    for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=5):
+    for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=len(headers)):
         for cell in row:
             cell.font = body_font
             cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
-    for column, width in zip("ABCDE", (42, 54, 54, 54, 54), strict=True):
-        worksheet.column_dimensions[column].width = width
+    widths = (42, 54, 54, 54, 54) + ((24, 32, 16, 24) if include_metadata else ())
+    for column, width in enumerate(widths, start=1):
+        worksheet.column_dimensions[get_column_letter(column)].width = width
     worksheet.freeze_panes = "A2"
     worksheet.sheet_view.showGridLines = False
     if cases:
-        table = Table(displayName="TestCasesTable", ref=f"A1:E{worksheet.max_row}")
+        table = Table(displayName="TestCasesTable", ref=f"A1:{get_column_letter(len(headers))}{worksheet.max_row}")
         table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
         worksheet.add_table(table)
     workbook.save(path)

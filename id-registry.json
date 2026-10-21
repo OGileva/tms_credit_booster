@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "assigned": {
+    "crm/listings/clients": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5"
+    ],
+    "crm/listings/orders": [
+      "6"
+    ]
+  }
+}
